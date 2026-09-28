@@ -85,8 +85,33 @@ def test_parse_topic_rejects_untracked_prose_in_block_workspace(tmp_path: Path):
         encoding="utf-8",
     )
 
-    with pytest.raises(TopicFormatError, match="memory block ID required"):
+    with pytest.raises(TopicFormatError, match="memory block ID required") as exc:
         parse_topic_tree(topics)
+    assert "This paragraph has no block ID or evidence." in str(exc.value)
+
+
+def test_parse_topic_aggregates_all_malformed_footnote_definitions(tmp_path: Path):
+    topics = tmp_path / "topics"
+    (topics / "people").mkdir(parents=True)
+    (topics / "people" / "john.md").write_text(
+        "Fact.[^e1] ^abc123\n\n"
+        "[^e1]: Sources: [D1:1](../../sources/D1.md#d1-1)\n",
+        encoding="utf-8",
+    )
+    (topics / "people" / "maria.md").write_text(
+        "Fact.[^e2] ^def456\n\n"
+        "[^e2]: Time: `2026-08-23` [D1:2](../../sources/D1.md#d1-2)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TopicFormatError, match="repair all") as exc:
+        parse_topic_tree(topics)
+
+    message = str(exc.value)
+    assert "people/john.md:3" in message
+    assert "people/maria.md:3" in message
+    assert "[^e1]: Sources:" in message
+    assert "[^e2]: Time:" in message
 
 
 @pytest.mark.parametrize(
@@ -118,8 +143,74 @@ def test_parse_topic_rejects_uncovered_tail_or_invalid_calendar_date(
         f"# Topic\n\n{paragraph}\n\n{definition}\n", encoding="utf-8"
     )
 
-    with pytest.raises(TopicFormatError, match=message):
+    with pytest.raises(TopicFormatError, match=message) as exc:
         parse_topic_tree(topics)
+    if message == "content after final evidence":
+        assert "file=bad.md" in str(exc.value)
+        assert "trailing_excerpt='Unsupported tail.'" in str(exc.value)
+        assert "trailing_chars=17" in str(exc.value)
+
+
+def test_parse_topic_reports_all_uncovered_tails(tmp_path: Path):
+    topics = tmp_path / "topics"
+    topics.mkdir()
+    (topics / "bad.md").write_text(
+        "First.[^e-1] ^x_placeholder ^abc123\n\n"
+        "Second.[^e-2] leftover ^def456\n\n"
+        "[^e-1]: Time: `undated`; Sources: [D1:1](../sources/D1.md#d1-1)\n"
+        "[^e-2]: Time: `undated`; Sources: [D1:2](../sources/D1.md#d1-2)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TopicFormatError, match="repair all") as exc:
+        parse_topic_tree(topics)
+    message = str(exc.value)
+    assert "block=abc123; file=bad.md; line=1; trailing_excerpt='^x_placeholder'" in message
+    assert "block=def456; file=bad.md; line=3; trailing_excerpt='leftover'" in message
+
+
+def test_parse_topic_reports_all_unused_footnotes_with_locations(tmp_path: Path):
+    topics = tmp_path / "topics"
+    topics.mkdir()
+    (topics / "bad.md").write_text(
+        "Fact.[^used] ^abc123\n\n"
+        "[^used]: Time: `undated`; Sources: [D1:1](../sources/D1.md#d1-1)\n"
+        "[^orphan-1]: Time: `undated`; Sources: [D1:2](../sources/D1.md#d1-2)\n"
+        "[^orphan-2]: Time: `undated`; Sources: [D1:3](../sources/D1.md#d1-3)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TopicFormatError, match="unused footnote definitions") as exc:
+        parse_topic_tree(topics)
+    assert "id=orphan-1 file=bad.md line=4" in str(exc.value)
+    assert "id=orphan-2 file=bad.md line=5" in str(exc.value)
+
+
+def test_parse_topic_reports_duplicate_footnote_locations(tmp_path: Path):
+    topics = tmp_path / "topics"
+    topics.mkdir()
+    (topics / "bad.md").write_text(
+        "Fact.[^e1] ^abc123\n\n"
+        "[^e1]: Time: `undated`; Sources: [D1:1](../sources/D1.md#d1-1)\n"
+        "[^e1]: Time: `undated`; Sources: [D1:1](../sources/D1.md#d1-1)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TopicFormatError, match="duplicate footnote definitions") as exc:
+        parse_topic_tree(topics)
+    assert "id=e1 file=bad.md lines=[3, 4] occurrences=2" in str(exc.value)
+
+
+def test_parse_topic_reports_duplicate_memory_id_locations(tmp_path: Path):
+    topics = tmp_path / "topics"
+    topics.mkdir()
+    (topics / "bad.md").write_text(
+        "First.[^e1] ^same-id\n\nSecond.[^e2] ^same-id\n\n"
+        "[^e1]: Time: `undated`; Sources: [D1:1](../sources/D1.md#d1-1)\n"
+        "[^e2]: Time: `undated`; Sources: [D1:2](../sources/D1.md#d1-2)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TopicFormatError, match="duplicate memory_ids") as exc:
+        parse_topic_tree(topics)
+    assert "id=same-id first=bad.md:1 duplicate=bad.md:3" in str(exc.value)
 
 
 def test_parse_freeform_topic_with_adjacent_memory_ids(tmp_path: Path):

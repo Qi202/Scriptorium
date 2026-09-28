@@ -80,10 +80,7 @@ class BlockViewsMixin:
             limit = self.config.core_max_tokens
             token_count = core_token_count(core)
             if token_count > limit:
-                raise CoreCapacityError(
-                    token_count=token_count,
-                    limit=limit,
-                )
+                raise CoreCapacityError(token_count=token_count, limit=limit)
             self._validate_core_sources(core)
         return self._synchronize_block_topics(
             parse_topic_tree(self.stage_dir / "topics")
@@ -105,24 +102,89 @@ class BlockViewsMixin:
         if not source.exists() or anchor not in source.read_text(encoding="utf-8"):
             raise ValueError(f"missing source reference: {ref}")
 
+    def _validate_source_references(
+        self, refs: list[str] | tuple[str, ...],
+        locations: dict[str, list[str]] | None = None,
+    ) -> None:
+        """Surface every malformed/missing handle in one rejected candidate."""
+        missing: list[str] = []
+        invalid: list[str] = []
+        for ref in dict.fromkeys(refs):
+            try:
+                self._validate_source_reference(ref)
+            except ValueError as exc:
+                if str(exc).startswith("missing source reference:"):
+                    missing.append(ref)
+                    continue
+                if str(exc).startswith("invalid source reference:"):
+                    invalid.append(ref)
+                    continue
+                raise
+        errors = []
+        def describe(ref: str) -> str:
+            places = list(dict.fromkeys((locations or {}).get(ref, [])))
+            return ref + (" " + " | ".join(places) if places else "")
+
+        if invalid:
+            errors.append("invalid source references (repair all): "
+                          + "; ".join(map(describe, invalid)))
+        if missing:
+            errors.append("missing source references (repair all): "
+                          + "; ".join(map(describe, missing)))
+        if errors:
+            raise ValueError("\n".join(errors))
+
     def _validate_core_sources(self, core: Path) -> None:
         lines = core.read_text(encoding="utf-8").splitlines()
-        annotations = definitions(lines)
-        used = {
-            match.group("id")
-            for line in lines
-            if definition_match(line) is None
-            for match in SINGLE_CITATION.finditer(line)
-        }
+        definition_lines: dict[str, list[int]] = {}
+        for line_number, line in enumerate(lines, 1):
+            if match := definition_match(line):
+                definition_lines.setdefault(match.group("id"), []).append(line_number)
+        duplicate_definitions = [
+            f"id={citation_id} file=core.md lines={positions!r} occurrences={len(positions)}"
+            for citation_id, positions in definition_lines.items()
+            if len(positions) > 1
+        ]
+        if duplicate_definitions:
+            raise ValueError(
+                "duplicate Core footnote definitions (repair all): "
+                + " | ".join(duplicate_definitions)
+            )
+        annotations = definitions(lines, source_path="core.md")
+        citation_lines: dict[str, list[int]] = {}
+        for line_number, line in enumerate(lines, 1):
+            if definition_match(line) is None:
+                for match in SINGLE_CITATION.finditer(line):
+                    citation_lines.setdefault(match.group("id"), []).append(line_number)
+        used = set(citation_lines)
         missing = used - set(annotations)
         if missing:
-            raise ValueError(f"undefined Core footnote: {sorted(missing)[0]}")
+            raise ValueError(
+                "undefined Core footnotes (repair all): "
+                + " | ".join(
+                    f"id={citation_id} file=core.md lines={citation_lines[citation_id]!r}"
+                    for citation_id in sorted(missing)
+                )
+            )
         unused = set(annotations) - used
         if unused:
-            raise ValueError(f"unused Core footnote: {sorted(unused)[0]}")
-        for _when, refs, _links in annotations.values():
-            for ref in refs:
-                self._validate_source_reference(ref)
+            raise ValueError(
+                "unused Core footnotes (repair all): "
+                + " | ".join(
+                    f"id={citation_id} file=core.md line={definition_lines[citation_id][0]}"
+                    for citation_id in sorted(unused)
+                )
+            )
+        locations: dict[str, list[str]] = {}
+        for line_number, line in enumerate(lines, 1):
+            if match := definition_match(line):
+                for ref in annotations[match.group("id")][1]:
+                    locations.setdefault(ref, []).append(
+                        f"file=core.md line={line_number} footnote={match.group('id')}"
+                    )
+        self._validate_source_references(tuple(
+            ref for _when, refs, _links in annotations.values() for ref in refs
+        ), locations)
 
     def _uses_block_topic_format(self, units: list[Any]) -> bool:
         if any(unit.evidence for unit in units):
@@ -196,6 +258,17 @@ class BlockViewsMixin:
                 path.write_text(normalized, encoding="utf-8")
 
     def _synchronize_block_topics(self, units: list[Any]) -> str:
+        # Link rendering otherwise raises on the first malformed handle,
+        # exhausting repair attempts one bad reference at a time.
+        locations: dict[str, list[str]] = {}
+        for unit in units:
+            for ref in unit.source_refs:
+                locations.setdefault(ref, []).append(
+                    f"file=topics/{unit.topic_path} block={unit.memory_id}"
+                )
+        self._validate_source_references(tuple(
+            ref for unit in units for ref in unit.source_refs
+        ), locations)
         self._rewrite_block_links(units)
         units = parse_topic_tree(self.stage_dir / "topics")
         ids = {unit.memory_id for unit in units}
@@ -211,8 +284,6 @@ class BlockViewsMixin:
                     f"relation_targets={sorted(set(unit.relation_targets))!r}; "
                     f"missing_targets={missing_targets!r}"
                 )
-            for ref in unit.source_refs:
-                self._validate_source_reference(ref)
 
         limit = self.config.recent_limit
         state_store = RuntimeStateStore(self.stage_dir)

@@ -17,6 +17,18 @@ from .bm25 import (
     parse_topic_file,
 )
 
+_SHARED_ENCODERS: dict[str, Any] = {}
+_SHARED_ENCODERS_LOCK = threading.RLock()
+_SHARED_ENCODER_CALL_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _shared_encoder_call_lock(model_name: str) -> threading.RLock:
+    """Serialize encode calls on an encoder shared by concurrent readers."""
+    with _SHARED_ENCODERS_LOCK:
+        return _SHARED_ENCODER_CALL_LOCKS.setdefault(
+            str(model_name), threading.RLock()
+        )
+
 
 class MemoryEmbeddingIndex:
     """Rebuild an in-memory embedding index from Topic and Source files."""
@@ -27,12 +39,14 @@ class MemoryEmbeddingIndex:
         *,
         encoder: Any | None = None,
         files: list[Path] | tuple[Path, ...] | None = None,
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     ):
         self.memory_dir = Path(memory_dir).resolve()
         self.topics_dir = self.memory_dir / "topics"
         self.sources_dir = self.memory_dir / "sources"
         self._visible_files = None if files is None else tuple(files)
         self._encoder = encoder
+        self.model_name = str(model_name)
         self._events_cache: list[MemoryEvent] | None = None
         self._document_vectors: np.ndarray | None = None
         self._lock = threading.RLock()
@@ -40,13 +54,13 @@ class MemoryEmbeddingIndex:
     @property
     def encoder(self) -> Any:
         if self._encoder is None:
-            with self._lock:
+            with _SHARED_ENCODERS_LOCK:
                 if self._encoder is None:
                     from sentence_transformers import SentenceTransformer
-
-                    self._encoder = SentenceTransformer(
-                        "sentence-transformers/all-MiniLM-L6-v2"
-                    )
+                    self._encoder = _SHARED_ENCODERS.get(self.model_name)
+                    if self._encoder is None:
+                        self._encoder = SentenceTransformer(self.model_name)
+                        _SHARED_ENCODERS[self.model_name] = self._encoder
         return self._encoder
 
     def _events(self) -> list[MemoryEvent]:
@@ -90,9 +104,10 @@ class MemoryEmbeddingIndex:
             with self._lock:
                 if self._document_vectors is None:
                     documents = [self._search_text(event) for event in events]
-                    self._document_vectors = np.asarray(
-                        self.encoder.encode(documents), dtype=float
-                    )
+                    with _shared_encoder_call_lock(self.model_name):
+                        self._document_vectors = np.asarray(
+                            self.encoder.encode(documents), dtype=float
+                        )
         time_window = _query_time_window(date_from, date_to)
         candidate_indices = [
             index
@@ -104,9 +119,10 @@ class MemoryEmbeddingIndex:
         candidate_events = [events[index] for index in candidate_indices]
         document_vectors = self._document_vectors[candidate_indices]
         with self._lock:
-            query_vector = np.asarray(
-                self.encoder.encode([query]), dtype=float
-            )[0]
+            with _shared_encoder_call_lock(self.model_name):
+                query_vector = np.asarray(
+                    self.encoder.encode([query]), dtype=float
+                )[0]
         document_norms = np.linalg.norm(document_vectors, axis=1)
         query_norm = np.linalg.norm(query_vector)
         denominators = document_norms * query_norm

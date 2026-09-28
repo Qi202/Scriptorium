@@ -14,10 +14,13 @@ from ..markdown import (
     render_definition,
 )
 
-# Footnote labels the writer supplies, e.g. [^e1]. Stable IDs the Runtime
-# assigns look like e-1f4c7a2b90, so the digit-only suffix separates them.
+# Footnote labels the writer supplies, e.g. [^e1]. Other providers can emit
+# the equivalent short forms [^1] or [^s1]. Runtime IDs are content-addressed
+# and cannot collide with these temporary forms.
 # ``new-evidence-<label>`` is the older placeholder form, still accepted.
-LOCAL_EVIDENCE_LABEL = re.compile(r"e\d+|new-evidence-[A-Za-z0-9-]+")
+LOCAL_EVIDENCE_LABEL = re.compile(
+    r"(?:e\d+|s\d+|\d+|new-evidence-[A-Za-z0-9-]+)"
+)
 CITATION = re.compile(r"\[\^([A-Za-z0-9_-]+)\]")
 
 
@@ -35,6 +38,15 @@ class TopicNormalizationMixin:
                 path.read_bytes()
             ).hexdigest()
             for path in root.rglob("*.md")
+        }
+
+    @staticmethod
+    def _file_fingerprints(root: Path) -> dict[str, str]:
+        if not root.exists():
+            return {}
+        return {
+            path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in root.rglob("*") if path.is_file()
         }
 
     @staticmethod
@@ -104,6 +116,35 @@ class TopicNormalizationMixin:
         # `texts` is rewritten below. Keep the actual on-disk bytes separate
         # so a normalization-only change is still installed at the end.
         on_disk = dict(texts)
+
+        # Collect malformed bare handles before _source_link can fail on only
+        # the first one. This does not guess or repair any citation itself.
+        invalid_refs: dict[str, list[str]] = {}
+        for path, text in texts.items():
+            relative = (
+                "core.md" if path == core
+                else (Path("topics") / path.relative_to(topics)).as_posix()
+            )
+            for line_number, line in enumerate(text.splitlines(), 1):
+                definition = definition_match(line)
+                if definition is None:
+                    continue
+                bare = re.sub(r"\[[^]]+\]\([^)]+\)", "", definition.group("sources"))
+                for value in re.split(r"\s*(?:,|·)\s*", bare):
+                    ref = value.strip()
+                    if (ref and not re.fullmatch(r"D\d+:\d+", ref)
+                            and self._provider_source_location(ref) is None):
+                        location = (
+                            f"file={relative} line={line_number} "
+                            f"footnote={definition.group('id')}"
+                        )
+                        invalid_refs.setdefault(ref, []).append(location)
+        if invalid_refs:
+            raise ValueError("invalid source references (repair all): "
+                             + "; ".join(
+                                 f"{ref} {' | '.join(dict.fromkeys(locations))}"
+                                 for ref, locations in invalid_refs.items()
+                             ))
 
         # Evidence labels are content-addressed, so the same claim keeps its
         # footnote ID no matter what else the edit touched.
@@ -361,9 +402,16 @@ class TopicNormalizationMixin:
                 ))
             lost = before_block_ids - surviving
             if lost:
+                locations = [
+                    f"id={block_id} file=topics/{before[block_id].topic_path}"
+                    for block_id in sorted(lost)
+                    if block_id in before
+                ]
                 raise ValueError(
                     "block ID must not be removed: "
-                    + ", ".join(sorted(lost)[:5])
+                    + ", ".join(sorted(lost))
+                    + ("\noriginal_locations: " + " | ".join(locations)
+                       if locations else "")
                 )
         for unit in units:
             previous = before.get(unit.memory_id)

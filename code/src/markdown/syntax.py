@@ -61,24 +61,29 @@ def source_reference(label: str, target: str) -> str:
 
 def definitions(
     lines: list[str],
+    *, source_path: str | None = None,
 ) -> dict[str, tuple[str | None, tuple[str, ...], tuple[str, ...]]]:
     values = {}
-    for line in lines:
+    for line_number, line in enumerate(lines, 1):
         match = definition_match(line)
         if not match:
             continue
         citation_id = match.group("id")
+        location = (
+            f" file={source_path} line={line_number}"
+            if source_path is not None else ""
+        )
         if citation_id in values:
             raise TopicFormatError(
-                f"duplicate footnote definition: {citation_id}"
+                f"duplicate footnote definition: {citation_id}{location}"
             )
         when = match.group("when")
         if when != "undated" and not is_valid_temporal_value(when):
-            raise TopicFormatError(f"invalid evidence date: {when}")
+            raise TopicFormatError(f"invalid evidence date: {when}{location} footnote={citation_id}")
         links = LINK.findall(match.group("sources"))
         if not links:
             raise TopicFormatError(
-                f"memory source links required: {citation_id}"
+                f"memory source links required: {citation_id}{location}"
             )
         values[citation_id] = (
             None if when == "undated" else when,
@@ -88,21 +93,28 @@ def definitions(
     return values
 
 
-def paragraphs(lines: list[str]) -> Iterator[tuple[str, tuple[str, ...]]]:
+def paragraphs(
+    lines: list[str], *, with_line_numbers: bool = False,
+) -> Iterator[tuple[str, tuple[str, ...]] | tuple[str, tuple[str, ...], int]]:
     headings: list[str] = []
     paragraph: list[str] = []
     paragraph_headings: tuple[str, ...] = ()
+    paragraph_start = 0
     in_fence = False
 
-    def flush() -> tuple[str, tuple[str, ...]] | None:
+    def flush() -> tuple[str, tuple[str, ...]] | tuple[str, tuple[str, ...], int] | None:
         nonlocal paragraph
         if not paragraph:
             return None
         value = "\n".join(paragraph).strip()
         paragraph = []
-        return (value, paragraph_headings) if value else None
+        if not value:
+            return None
+        if with_line_numbers:
+            return value, paragraph_headings, paragraph_start
+        return value, paragraph_headings
 
-    for line in lines + [""]:
+    for line_number, line in enumerate(lines + [""], start=1):
         if line.lstrip().startswith("```"):
             if result := flush():
                 yield result
@@ -126,4 +138,5 @@ def paragraphs(lines: list[str]) -> Iterator[tuple[str, tuple[str, ...]]]:
             continue
         if not paragraph:
             paragraph_headings = tuple(headings)
+            paragraph_start = line_number
         paragraph.append(line)
