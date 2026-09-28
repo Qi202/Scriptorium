@@ -50,6 +50,10 @@ def main() -> int:
             + ". Reuses frozen full memory and requires --condition native."
         ),
     )
+    parser.add_argument(
+        "--search-tools", choices=("split", "fused"), default="split",
+        help="Reader search interface; fused exposes one memory_search tool.",
+    )
     try:
         run_config.apply(parser, None, path_keys=_PATH_KEYS)
     except run_config.ConfigError as exc:
@@ -79,6 +83,7 @@ def main() -> int:
         max_budget_usd=args.max_budget_usd,
         verify_sources=args.verify_sources,
         memory_components=args.memory_components,
+        search_tools=args.search_tools,
     )
     if query_config.memory_components is not None and args.condition != "native":
         parser.error("--memory-components requires --condition native")

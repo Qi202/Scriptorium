@@ -73,6 +73,7 @@ def collect_answer(
             include_recent=include_recent,
             components=components,
             state=state,
+            search_tools=config.search_tools,
         ),
         max_turns=config.max_turns,
         max_budget_usd=config.max_budget_usd,

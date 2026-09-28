@@ -132,6 +132,7 @@ def answer_one(
         "source_checkpoint": str(checkpoint_path),
         "model": model,
         "condition": condition,
+        "search_tools": query_config.search_tools,
         "memory_components": (
             list(query_config.memory_components)
             if query_config.memory_components is not None

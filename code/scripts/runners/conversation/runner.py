@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         max_turns=args.max_turns,
         max_budget_usd=args.max_budget_usd,
         verify_sources=args.verify_sources,
+        search_tools=args.search_tools,
     )
     # Read the provider's spend counter before any request, so the run can
     # report what it actually cost rather than only a price-times-tokens guess.

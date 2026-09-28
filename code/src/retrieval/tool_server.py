@@ -32,8 +32,11 @@ def retrieval_tools(
     include_recent: bool,
     state: RetrievalToolState,
     components: tuple[str, ...] | str | None = None,
+    search_tools: str = "split",
 ) -> list[Any]:
-    definitions = tools_for(condition, components=components)
+    definitions = tools_for(
+        condition, components=components, search_tools=search_tools
+    )
 
     def make_tool(definition: dict[str, Any]):
         function = definition["function"]
@@ -70,6 +73,7 @@ def retrieval_tools(
                 and output not in {
                     "No BM25 matches.",
                     "No embedding matches.",
+                    "No memory matches.",
                 }
             )
             tokens = TokenCounter.resolve(

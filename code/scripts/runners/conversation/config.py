@@ -77,6 +77,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--verify-sources", action=argparse.BooleanOptionalAction, default=True
     )
     parser.add_argument(
+        "--search-tools", choices=("split", "fused"), default="split",
+        help="Reader search interface; fused exposes one memory_search tool.",
+    )
+    parser.add_argument(
         "--evaluate", action=argparse.BooleanOptionalAction, default=True
     )
     parser.add_argument("--build-only", action="store_true")
